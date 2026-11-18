@@ -1,46 +1,110 @@
 #!/usr/bin/env python3
-"""Frozen pre-SDK histories, never a second package validator or runtime index."""
+"""Frozen pre-SDK histories, never a second package validator or runtime index.
+
+Every read goes through git at an explicit commit: modes come from the tree, so no link (an entry's or any folder's
+above it) is ever followed.
+"""
 import argparse
 import html
 import json
 import pathlib
-import shutil
+import re
+import subprocess
 import tomllib
 import urllib.parse
 
-ARCHIVE = pathlib.Path("archive/native-v1/mods")
+ARCHIVE = "archive/native-v1/mods"
 # Each frozen catalogue: its folder, the kinds it may hold with their package extensions, and what it is.
 ARCHIVES = {
     "native-v1": (ARCHIVE, {"native-mod": (".hnmod", ".hmod"), "modpack": (".hpack",)},
                   "legacy natives and their modpacks",
                   "Legacy .hnmod source bundles and dependent modpacks are incompatible with the .hmod SDK runtime"),
-    "api-0.1": (pathlib.Path("archive/api-0.1/mods"), {"shader": (".hshader",), "mod": (".hmod",)},
+    "api-0.1": ("archive/api-0.1/mods", {"shader": (".hshader",), "mod": (".hmod",)},
                 "shader API 0.1 packs and pre-SDK content mods",
                 "Shader packs for shader API 0.1 and content mods with pre-SDK manifests are incompatible with "
                 "the shader API 0.2 and .hmod SDK runtime"),
 }
+# The reviewed live-to-archive moves, one `<archive> <id>` per line, read from the trusted base only: no other
+# pull request can take a live project out of the index by moving it.
+MOVES = ".github/archive-moves.txt"
+ID = re.compile(r"[a-z0-9_]{1,64}")
+REGULAR = ("100644", "100755")
 RELEASES = "https://github.com/horizon-rust/horizon-mods/releases/download/"
 
 
-def entries(root, folder):
-    directory = root / folder
-    if not directory.exists():
-        return {}
-    if directory.is_symlink() or not directory.is_dir():
-        raise ValueError(f"{directory}: expected a directory")
+def git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True).stdout
+
+
+def listing(repo, treeish):
     result = {}
-    for path in sorted(directory.iterdir()):
-        if path.is_symlink() or not path.is_file() or path.suffix != ".toml":
-            raise ValueError(f"{path}: expected a regular <id>.toml file")
-        data = path.read_bytes()
-        entry = tomllib.loads(data.decode())
-        if entry["id"] != path.stem:
-            raise ValueError(f"{path}: id does not match filename")
-        result[path.stem] = (entry, data)
+    for record in git(repo, "ls-tree", "-z", treeish).split(b"\0"):
+        if record:
+            meta, name = record.split(b"\t", 1)
+            mode, kind, obj = meta.decode().split()
+            result[name.decode()] = (mode, kind, obj)
     return result
 
 
-def review_archive(name, kinds, holds, old, live, before, frozen, removed):
+def folder(repo, sha, path):
+    """The folder's entries at the commit, {} if it is absent; refused if it or a folder above it is not a folder."""
+    current = sha
+    for depth, part in enumerate(path.split("/")):
+        found = listing(repo, current).get(part)
+        if found is None:
+            return {}
+        mode, kind, current = found
+        if mode != "040000" or kind != "tree":
+            raise ValueError(f"{'/'.join(path.split('/')[:depth + 1])}: expected a folder")
+    return listing(repo, current)
+
+
+def regular_file(repo, sha, path):
+    """The file's bytes at the commit, None if it is absent; refused unless it is a regular file."""
+    parent, _, name = path.rpartition("/")
+    found = folder(repo, sha, parent).get(name) if parent else listing(repo, sha).get(name)
+    if found is None:
+        return None
+    mode, kind, obj = found
+    if mode not in REGULAR or kind != "blob":
+        raise ValueError(f"{path}: expected a regular file")
+    return git(repo, "cat-file", "blob", obj)
+
+
+def entries(repo, sha, path):
+    result = {}
+    for name, (mode, kind, obj) in sorted(folder(repo, sha, path).items()):
+        id = name.removesuffix(".toml")
+        if mode not in REGULAR or kind != "blob" or not name.endswith(".toml") or not ID.fullmatch(id):
+            raise ValueError(f"{path}/{name}: expected a regular <id>.toml file")
+        data = git(repo, "cat-file", "blob", obj)
+        entry = tomllib.loads(data.decode())
+        if entry.get("id") != id:
+            raise ValueError(f"{path}/{name}: id does not match filename")
+        result[id] = (entry, data)
+    return result
+
+
+def reviewed_moves(repo, sha):
+    data = regular_file(repo, sha, MOVES) or b""
+    moves = set()
+    for line in data.decode().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            name, id = line.split()
+            moves.add((name, id))
+    return moves
+
+
+def owned_by_author(historic, author, author_id):
+    """The pull request's author (GitHub's own login and numeric id, not a form's claim) is a recorded owner."""
+    if author.lower() not in (owner.lower() for owner in historic.get("owners", [])):
+        return False
+    ids = historic.get("owner_ids", [])
+    return not ids or author_id in ids
+
+
+def review_archive(name, kinds, holds, old, live, before, frozen, moves, author, author_id, removed):
     for id, (_, data) in before.items():
         if id not in frozen or frozen[id][1] != data:
             raise ValueError(f"{id}: frozen historical metadata must not change or disappear")
@@ -50,11 +114,16 @@ def review_archive(name, kinds, holds, old, live, before, frozen, removed):
         if not versions or not extensions or any(not v["file"].endswith(extensions) for v in versions):
             raise ValueError(f"{id}: {name} history is only {holds}")
         if id not in before:
+            if (name, id) not in moves:
+                raise ValueError(f"{id}: moving it to {name} is not on the reviewed list {MOVES}")
             if id not in old or old[id][1] != data or id in live:
                 raise ValueError(f"{id}: archive by moving the original entry unchanged, separately from reactivation")
             removed.append(id)
         if id in live:
             current = live[id][0]
+            if (id not in old or old[id][1] != live[id][1]) and not owned_by_author(historic, author, author_id):
+                raise ValueError(f"{id}: this id is archived, and the pull request's author is not one of its owners; "
+                                 "a maintainer must confirm the owner")
             for field in ("kind", "owners", "owner_ids", "key"):
                 if current.get(field) != historic.get(field):
                     raise ValueError(f"{id}: reactivation must preserve archived {field}")
@@ -63,34 +132,38 @@ def review_archive(name, kinds, holds, old, live, before, frozen, removed):
                     raise ValueError(f"{id}: reactivation needs a new version and package, not a renamed historic bundle")
 
 
-def review_base(base, head, out):
-    """Allow only byte-preserving archival; keep normal registry review for live data."""
-    old = entries(base, pathlib.Path("mods"))
-    live = entries(head, pathlib.Path("mods"))
-    frozen = {name: entries(head, folder) for name, (folder, *_) in ARCHIVES.items()}
+def review_base(base, base_sha, head, head_sha, out, author, author_id):
+    """Allow only reviewed byte-preserving archival; keep normal registry review for live data."""
+    old = entries(base, base_sha, "mods")
+    live = entries(head, head_sha, "mods")
+    moves = reviewed_moves(base, base_sha)
+    frozen = {name: entries(head, head_sha, path) for name, (path, *_) in ARCHIVES.items()}
     seen = set()
     for ids in frozen.values():
         if seen & ids.keys():
             raise ValueError(f"{min(seen & ids.keys())}: an id is frozen in one archive only")
         seen |= ids.keys()
     removed = []
-    for name, (folder, kinds, holds, _) in ARCHIVES.items():
-        review_archive(name, kinds, holds, old, live, entries(base, folder), frozen[name], removed)
+    for name, (path, kinds, holds, _) in ARCHIVES.items():
+        review_archive(name, kinds, holds, old, live, entries(base, base_sha, path), frozen[name], moves,
+                       author, author_id, removed)
     for id, (entry, _) in live.items():
         if any(v["file"].endswith(".hnmod") for v in entry.get("versions", [])):
             raise ValueError(f"{id}: .hnmod is frozen history, not a live package")
-    out.mkdir()
-    shutil.copytree(base / "mods", out / "mods")
-    if (base / "revoked.toml").exists():
-        shutil.copyfile(base / "revoked.toml", out / "revoked.toml")
+    (out / "mods").mkdir(parents=True)
+    for id, (_, data) in old.items():
+        if id not in removed:
+            (out / "mods" / f"{id}.toml").write_bytes(data)
+    revoked = regular_file(base, base_sha, "revoked.toml")
+    if revoked is not None:
+        (out / "revoked.toml").write_bytes(revoked)
     for id in removed:
-        (out / "mods" / f"{id}.toml").unlink()
         print(f"Archived {id}: original metadata and published assets retained; incompatible with the SDK runtime")
 
 
-def history(root, out, name="native-v1"):
-    folder, _, _, reason = ARCHIVES[name]
-    frozen = entries(root, folder)
+def history(root, sha, out, name="native-v1"):
+    path, _, _, reason = ARCHIVES[name]
+    frozen = entries(root, sha, path)
     out.mkdir(parents=True, exist_ok=True)
     (out / "mods").mkdir(exist_ok=True)
     esc = html.escape
@@ -123,19 +196,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     review = commands.add_parser("review-base")
-    for name in ("base", "head", "out"):
-        review.add_argument(name, type=pathlib.Path)
+    review.add_argument("base", type=pathlib.Path)
+    review.add_argument("base_sha")
+    review.add_argument("head", type=pathlib.Path)
+    review.add_argument("head_sha")
+    review.add_argument("out", type=pathlib.Path)
+    review.add_argument("--author", required=True, help="the pull request's author login, from GitHub")
+    review.add_argument("--author-id", type=int, required=True, help="that account's numeric id, from GitHub")
     archive = commands.add_parser("history")
-    for name in ("root", "out"):
-        archive.add_argument(name, type=pathlib.Path)
+    archive.add_argument("root", type=pathlib.Path)
+    archive.add_argument("sha")
+    archive.add_argument("out", type=pathlib.Path)
     archive.add_argument("--archive", choices=ARCHIVES, default="native-v1")
     args = parser.parse_args()
     try:
         if args.command == "review-base":
-            review_base(args.base, args.head, args.out)
+            review_base(args.base, args.base_sha, args.head, args.head_sha, args.out, args.author, args.author_id)
         else:
-            history(args.root, args.out, args.archive)
-    except (ValueError, KeyError, OSError) as error:
+            history(args.root, args.sha, args.out, args.archive)
+    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"{error}\n")
 
 

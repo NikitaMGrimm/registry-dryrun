@@ -22,7 +22,7 @@ jobs:
       # The main the pull request is merged into, not the event's base.sha: a re-run (or a run that waited in the
       # queue) keeps the old base.sha while GitHub rebuilds the merge commit on today's main, so everything main
       # gained in between would count as the pull request's own (the same as native-compat.yml's #425).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: head
           persist-credentials: false
@@ -30,7 +30,17 @@ jobs:
       - name: The main commit it is merged into
         id: merged
         run: echo "base=$(git -C head rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      # Every published input (entries, icons, screenshots) is read from disk later, and Pages follows links:
+      # a link or submodule anywhere in the tree could expose the runner's files.
+      - name: Only regular files
+        run: |
+          bad=$(git -C head ls-tree -r HEAD | awk '$1 != "100644" && $1 != "100755"')
+          if [ -n "$bad" ]; then
+            echo "::error::only regular files can be submitted, not links or submodules:"
+            echo "$bad"
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ steps.merged.outputs.base }}
           path: base
@@ -52,11 +62,17 @@ jobs:
           fi
           echo "login=${author:-$LOGIN}" >> "$GITHUB_OUTPUT"
       - name: What it changes
+        env:
+          # GitHub's own record of who opened the pull request, never a claim in its body: archived ids
+          # reactivate only for their owners.
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
         run: |
           set -o pipefail
           { echo "## Changes"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           status=0
-          python3 base/scripts/catalogue.py review-base base head review-base
+          python3 base/scripts/catalogue.py review-base base "${{ steps.merged.outputs.base }}" \
+            head "$(git -C head rev-parse HEAD)" review-base --author "$PR_AUTHOR" --author-id "$PR_AUTHOR_ID"
           cargo horizon-mod registry review review-base head --author "${{ steps.author.outputs.login }}" 2>&1 \
             | tee -a "$GITHUB_STEP_SUMMARY" || status=1
           echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -74,7 +90,7 @@ jobs:
       - name: The index it would publish
         run: |
           cargo horizon-mod registry build head --files files --out index.json --generated "$(date -u +%FT%TZ)"
-          python3 base/scripts/catalogue.py history head history
+          python3 base/scripts/catalogue.py history head "$(git -C head rev-parse HEAD)" history
           python3 - >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import json
           index = json.load(open("index.json"))
@@ -82,7 +98,7 @@ jobs:
           for p in index["projects"]:
               print(f"- {p['kind']} `{p['id']}` {p['versions'][0]['version']}")
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: registry-candidate
           path: |

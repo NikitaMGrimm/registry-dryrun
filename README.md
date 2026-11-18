@@ -51,6 +51,20 @@ not: its code runs with the player's account permissions. A published file never
 **Signing** is optional and recommended: put your [minisign](https://jedisct1.github.io/minisign/) public key in your
 entry, and every later version must be signed with it, so nobody else can publish an update in your name.
 
+## Publishing without the form
+
+While the form is down, a hand-made pull request does the same:
+
+1. Attach the file to a GitHub release of your own repository, under the name the entry gives it.
+2. Open a pull request that adds or updates `mods/<id>.toml` with a new `[[versions]]` record: its `version`, `file`
+   name and the file's `sha256` (`sha256sum <file>`). Link the release's file in the pull request's description.
+3. A maintainer reviews the entry (a native mod's source also gets a security review). From a checkout of main they
+   trust, signed in to `gh` as a maintainer, they run
+   `scripts/stage.sh <pull request> <base sha> <head sha> <link>` with the head they reviewed and
+   `git merge-base origin/main <head sha>`. The script reads the pull request as data and runs none of its code; it
+   stages the file once its name and SHA-256 match a version the pull request adds. Then they re-run the check, and
+   merge that reviewed head once its required checks pass.
+
 ## Report
 
 Something wrong with a project? [Report it](../../issues/new?template=report.yml). Your work published without your
@@ -78,7 +92,8 @@ The entry and index format is
 [the registry reference](https://github.com/horizon-rust/horizon/blob/main/docs/modding/src/reference/registry-index.md).
 Checks and publishing use `cargo horizon-mod` from **the exact reviewed 40-character engine commit** in
 `.github/horizon-rev`. Each job reads it from its trusted checkout (a pull request's check from main, never from the
-pull request), so fork pull requests get the same tool. Changing the pin is a reviewed commit to main.
+pull request), so fork pull requests get the same tool. Changing the pin is a reviewed commit to main. A live project leaves the index only by a move listed in
+`.github/archive-moves.txt` on main.
 Missing, abbreviated or floating revisions fail closed; there is no `main` fallback.
 Deploy `horizon-mod-registry` from that coordinated engine release too: an old deployed service does not understand
 the new package contract. First land `scripts/catalogue.py` and its unit tests alone as inert, reviewed tooling,
@@ -102,9 +117,12 @@ with original metadata and direct release links. Its `catalogue.json` is labelle
 index. Modpack dependencies in the current index must all refer to current packages; a dependent historical pack
 is archived rather than offered with missing dependencies.
 
-Archived IDs are reserved. The submission service refuses new listings for them; their owners can reactivate a
-project through a manually reviewed `mods/<id>.toml` with a genuinely new `.hmod` version, preserving kind, owners,
-numeric owner IDs and signing key. The frozen entry stays unchanged. That review checks the port, its source and
+Archived IDs are reserved by the pull request check: a `mods/<id>.toml` for an archived id passes only when the
+pull request was opened by one of the archived entry's owners (GitHub login and numeric id); otherwise a maintainer
+must confirm the owner. The submission form service still checks only live ids, and its pull requests are opened by
+its bot, so a reactivation through it always goes to a maintainer. Owners reactivate a project through a manually
+reviewed `mods/<id>.toml` with a genuinely new `.hmod` version, preserving kind, owners, numeric owner IDs and
+signing key. The frozen entry stays unchanged. That review checks the port, its source and
 exact-SDK proof, and the normal package/index checks still run. Consumer-mod ports are not part of this cutover.
 
 ## Build and publication trust

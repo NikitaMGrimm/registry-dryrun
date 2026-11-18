@@ -31,7 +31,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - run: scripts/install-tool.sh
@@ -101,16 +101,25 @@ jobs:
           # Screenshots are served beside the icons: the index lists them at
           # <site>screenshots/<id>/<name>.
           if [ -d screenshots ]; then cp -R screenshots site/screenshots; fi
-          python3 scripts/catalogue.py history . site/archive/native-v1
-          python3 scripts/catalogue.py history . site/archive/api-0.1 --archive api-0.1
+          python3 scripts/catalogue.py history . HEAD site/archive/native-v1
+          python3 scripts/catalogue.py history . HEAD site/archive/api-0.1 --archive api-0.1
           cat > site/index.html <<'HTML'
           <!doctype html><meta charset="utf-8"><title>Horizon mods</title>
           <meta http-equiv="refresh" content="0; url=https://playhorizon.dev/mods">
           <p><a href="https://playhorizon.dev/mods">playhorizon.dev/mods</a> · <a href="index.json">index.json</a> · <a href="archive/native-v1/">Incompatible native-v1 history</a> · <a href="archive/api-0.1/">Incompatible API 0.1 history</a></p>
           HTML
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      # upload-pages-artifact follows links, so a submitted link (an icon, a screenshot) could publish the
+      # runner's own files: only regular files and folders go to Pages.
+      - name: Only regular files are published
+        run: |
+          bad=$(find mods icons site $( [ -d screenshots ] && echo screenshots ) ! -type f ! -type d)
+          if [ -n "$bad" ]; then
+            echo "::error::only regular files are published, not: $bad"
+            exit 1
+          fi
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: site
       - id: pages
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
