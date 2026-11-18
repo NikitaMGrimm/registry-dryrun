@@ -22,13 +22,10 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment:
-      name: github-pages
-      url: ${{ steps.pages.outputs.page_url }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      HORIZON_REV: ${{ vars.HORIZON_REV || 'main' }}
+      HORIZON_REV: 11d9932461abda358dd4726f753a3ea5a9a07e31  # TEST ONLY
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
@@ -140,9 +137,8 @@ jobs:
           <meta http-equiv="refresh" content="0; url=https://playhorizon.dev/mods">
           <p><a href="https://playhorizon.dev/mods">playhorizon.dev/mods</a> · <a href="index.json">index.json</a></p>
           HTML
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-      - id: pages
-        uses: actions/deploy-pages@v4
+      # TEST ONLY: no Pages; show what would be published.
+      - name: What publish would list
+        run: |
+          echo "registry list (files fetch.sh downloads, releases made here):"; cargo horizon-mod registry list .
+          jq . site/index.json

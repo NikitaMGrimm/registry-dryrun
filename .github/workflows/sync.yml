@@ -9,6 +9,9 @@
 # downloaded, checks the shape of what `read` hands over, commits it and starts publish.
 name: sync
 on:
+  # TEST ONLY (registry-dryrun)
+  push:
+    branches: [sync-test]
   schedule:
     - cron: "53 * * * *"
   workflow_dispatch:
@@ -26,7 +29,7 @@ jobs:
       changed: ${{ steps.apply.outputs.changed }}
     env:
       GH_TOKEN: ${{ github.token }}
-      HORIZON_REV: ${{ vars.HORIZON_REV || 'main' }}
+      HORIZON_REV: 11d9932461abda358dd4726f753a3ea5a9a07e31  # TEST ONLY
     steps:
       - uses: actions/checkout@v4
         with:

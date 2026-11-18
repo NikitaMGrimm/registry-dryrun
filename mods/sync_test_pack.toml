@@ -1,0 +1,6 @@
+id = "sync_test_pack"
+kind = "resourcepack"
+repo = "NikitaMGrimm/horizon-sync-test"
+owners = ["NikitaMGrimm"]
+icon = "icons/sync_test_pack.png"
+categories = ["16x"]

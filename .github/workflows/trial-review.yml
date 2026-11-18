@@ -1,0 +1,33 @@
+# TEST ONLY (registry-dryrun): what check.yml's review says of a pull request adding a repo entry.
+name: trial-review
+on:
+  push:
+    branches: [sync-test]
+permissions:
+  contents: read
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    env:
+      HORIZON_REV: 11d9932461abda358dd4726f753a3ea5a9a07e31
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: head
+      - uses: actions/checkout@v4
+        with:
+          repository: horizon-rust/horizon-mods
+          path: base
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/horizon-rev
+          key: cargo-horizon-mod-${{ env.HORIZON_REV }}
+      - run: head/scripts/install-tool.sh
+      - name: Review of main + the repo entry
+        run: |
+          cp -R base main-only
+          cp head/mods/sync_test_pack.toml base/mods/
+          cp head/icons/sync_test_pack.png base/icons/
+          cargo horizon-mod registry review main-only base --author NikitaMGrimm || echo "exit $?"
