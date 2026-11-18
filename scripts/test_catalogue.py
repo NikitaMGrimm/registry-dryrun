@@ -23,6 +23,10 @@ signature = "original signature"
 '''.format("a" * 64)
 
 
+SHADER = NATIVE.replace('"native-mod"', '"shader"').replace(".hnmod", ".hshader")
+ARCHIVE_01 = catalogue.ARCHIVES["api-0.1"][0]
+
+
 class CatalogueTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -108,6 +112,35 @@ sha256 = "{}"
         self.write(self.base, "mods", pack)
         self.write(self.head, catalogue.ARCHIVE, pack)
         self.review()
+
+    def test_shader_api_01_pack_moves_to_its_own_archive(self):
+        self.write(self.base, "mods", SHADER)
+        self.write(self.head, ARCHIVE_01, SHADER)
+        self.review()
+        self.assertFalse((self.root / "review-base/mods/sample.toml").exists())
+
+    def test_shader_is_not_native_history(self):
+        self.write(self.base, "mods", SHADER)
+        self.write(self.head, catalogue.ARCHIVE, SHADER)
+        with self.assertRaisesRegex(ValueError, "native-v1 history is only"):
+            self.review()
+
+    def test_id_is_frozen_in_one_archive_only(self):
+        self.write(self.base, "mods", SHADER)
+        self.write(self.head, ARCHIVE_01, SHADER)
+        self.write(self.head, catalogue.ARCHIVE)
+        with self.assertRaisesRegex(ValueError, "one archive only"):
+            self.review()
+
+    def test_archived_shader_id_stays_reserved(self):
+        self.write(self.base, ARCHIVE_01, SHADER)
+        self.write(self.head, ARCHIVE_01, SHADER)
+        current = SHADER.replace("1.0.0", "2.0.0").replace("a" * 64, "b" * 64)
+        self.write(self.head, "mods", current)
+        self.review()
+        self.write(self.head, "mods", current.replace('["author"]', '["attacker"]'))
+        with self.assertRaisesRegex(ValueError, "preserve archived owners"):
+            self.review()
 
     def test_history_is_explicitly_noninstallable_and_html_escaped(self):
         self.write(self.head, catalogue.ARCHIVE)

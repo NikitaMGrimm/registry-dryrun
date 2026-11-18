@@ -103,10 +103,11 @@ jobs:
           # <site>screenshots/<id>/<name>.
           if [ -d screenshots ]; then cp -R screenshots site/screenshots; fi
           python3 scripts/catalogue.py history . site/archive/native-v1
+          python3 scripts/catalogue.py history . site/archive/api-0.1 --archive api-0.1
           cat > site/index.html <<'HTML'
           <!doctype html><meta charset="utf-8"><title>Horizon mods</title>
           <meta http-equiv="refresh" content="0; url=https://playhorizon.dev/mods">
-          <p><a href="https://playhorizon.dev/mods">playhorizon.dev/mods</a> · <a href="index.json">index.json</a> · <a href="archive/native-v1/">Incompatible native-v1 history</a></p>
+          <p><a href="https://playhorizon.dev/mods">playhorizon.dev/mods</a> · <a href="index.json">index.json</a> · <a href="archive/native-v1/">Incompatible native-v1 history</a> · <a href="archive/api-0.1/">Incompatible API 0.1 history</a></p>
           HTML
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

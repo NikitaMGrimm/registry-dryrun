@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Frozen native-v1 history, never a second package validator or runtime index."""
+"""Frozen pre-SDK histories, never a second package validator or runtime index."""
 import argparse
 import html
 import json
@@ -9,6 +9,16 @@ import tomllib
 import urllib.parse
 
 ARCHIVE = pathlib.Path("archive/native-v1/mods")
+# Each frozen catalogue: its folder, the kinds it may hold with their package extensions, and what it is.
+ARCHIVES = {
+    "native-v1": (ARCHIVE, {"native-mod": (".hnmod", ".hmod"), "modpack": (".hpack",)},
+                  "legacy natives and their modpacks",
+                  "Legacy .hnmod source bundles and dependent modpacks are incompatible with the .hmod SDK runtime"),
+    "api-0.1": (pathlib.Path("archive/api-0.1/mods"), {"shader": (".hshader",), "mod": (".hmod",)},
+                "shader API 0.1 packs and pre-SDK content mods",
+                "Shader packs for shader API 0.1 and content mods with pre-SDK manifests are incompatible with "
+                "the shader API 0.2 and .hmod SDK runtime"),
+}
 RELEASES = "https://github.com/horizon-rust/horizon-mods/releases/download/"
 
 
@@ -30,22 +40,15 @@ def entries(root, folder):
     return result
 
 
-def review_base(base, head, out):
-    """Allow only byte-preserving archival; keep normal registry review for live data."""
-    old = entries(base, pathlib.Path("mods"))
-    live = entries(head, pathlib.Path("mods"))
-    before = entries(base, ARCHIVE)
-    frozen = entries(head, ARCHIVE)
+def review_archive(name, kinds, holds, old, live, before, frozen, removed):
     for id, (_, data) in before.items():
         if id not in frozen or frozen[id][1] != data:
             raise ValueError(f"{id}: frozen historical metadata must not change or disappear")
-    removed = []
     for id, (historic, data) in frozen.items():
         versions = historic.get("versions", [])
-        kind = historic["kind"]
-        extensions = {"native-mod": (".hnmod", ".hmod"), "modpack": (".hpack",)}.get(kind, ())
+        extensions = kinds.get(historic["kind"], ())
         if not versions or not extensions or any(not v["file"].endswith(extensions) for v in versions):
-            raise ValueError(f"{id}: native-v1 history is only legacy natives and their modpacks")
+            raise ValueError(f"{id}: {name} history is only {holds}")
         if id not in before:
             if id not in old or old[id][1] != data or id in live:
                 raise ValueError(f"{id}: archive by moving the original entry unchanged, separately from reactivation")
@@ -58,6 +61,21 @@ def review_base(base, head, out):
             for v in current.get("versions", []):
                 if any(v["version"] == h["version"] or v["sha256"] == h["sha256"] for h in versions):
                     raise ValueError(f"{id}: reactivation needs a new version and package, not a renamed historic bundle")
+
+
+def review_base(base, head, out):
+    """Allow only byte-preserving archival; keep normal registry review for live data."""
+    old = entries(base, pathlib.Path("mods"))
+    live = entries(head, pathlib.Path("mods"))
+    frozen = {name: entries(head, folder) for name, (folder, *_) in ARCHIVES.items()}
+    seen = set()
+    for ids in frozen.values():
+        if seen & ids.keys():
+            raise ValueError(f"{min(seen & ids.keys())}: an id is frozen in one archive only")
+        seen |= ids.keys()
+    removed = []
+    for name, (folder, kinds, holds, _) in ARCHIVES.items():
+        review_archive(name, kinds, holds, old, live, entries(base, folder), frozen[name], removed)
     for id, (entry, _) in live.items():
         if any(v["file"].endswith(".hnmod") for v in entry.get("versions", [])):
             raise ValueError(f"{id}: .hnmod is frozen history, not a live package")
@@ -70,14 +88,15 @@ def review_base(base, head, out):
         print(f"Archived {id}: original metadata and published assets retained; incompatible with the SDK runtime")
 
 
-def history(root, out):
-    frozen = entries(root, ARCHIVE)
+def history(root, out, name="native-v1"):
+    folder, _, _, reason = ARCHIVES[name]
+    frozen = entries(root, folder)
     out.mkdir(parents=True, exist_ok=True)
     (out / "mods").mkdir(exist_ok=True)
     esc = html.escape
-    parts = ["<!doctype html><meta charset='utf-8'><title>Horizon native-v1 history</title>",
-             "<h1>Frozen native-v1 catalogue</h1>",
-             "<p>These historical source bundles and dependent modpacks are incompatible with the .hmod SDK runtime. "
+    parts = [f"<!doctype html><meta charset='utf-8'><title>Horizon {name} history</title>",
+             f"<h1>Frozen {name} catalogue</h1>",
+             f"<p>{esc(reason)}. "
              "This is not a list of completed ports or an installable registry. Published release assets, signatures "
              "and original metadata are retained. No legacy runtime fallback is provided.</p>",
              "<p><a href='../../index.json'>Current registry</a> · <a href='catalogue.json'>Historical metadata (not a runtime index)</a></p>"]
@@ -94,8 +113,8 @@ def history(root, out):
         parts.append("</ul></section>")
     (out / "index.html").write_text("\n".join(parts) + "\n")
     (out / "catalogue.json").write_text(json.dumps({
-        "archive": "native-v1", "installable": False,
-        "reason": "Legacy .hnmod source bundles and dependent modpacks are incompatible with the .hmod SDK runtime",
+        "archive": name, "installable": False,
+        "reason": reason,
         "projects": [entry for entry, _ in frozen.values()],
     }, indent=2) + "\n")
 
@@ -109,12 +128,13 @@ def main():
     archive = commands.add_parser("history")
     for name in ("root", "out"):
         archive.add_argument(name, type=pathlib.Path)
+    archive.add_argument("--archive", choices=ARCHIVES, default="native-v1")
     args = parser.parse_args()
     try:
         if args.command == "review-base":
             review_base(args.base, args.head, args.out)
         else:
-            history(args.root, args.out)
+            history(args.root, args.out, args.archive)
     except (ValueError, KeyError, OSError) as error:
         parser.exit(1, f"{error}\n")
 

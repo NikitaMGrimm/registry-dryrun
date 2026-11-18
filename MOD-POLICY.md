@@ -18,6 +18,7 @@ who makes them, who is responsible for them, and how to have one removed. By sub
 - **Native mods** (source `.hmod` packages built locally against their exact signed Horizon SDK) run
   with the same access to your computer as the game. Install them only from authors you trust.
   The frozen native-v1 catalogue retains old `.hnmod` metadata and assets for history, not installation on the SDK runtime.
+  The frozen api-0.1 catalogue does the same for shader API 0.1 packs and content mods with pre-SDK manifests.
 
 ## What authors promise when they submit
 
