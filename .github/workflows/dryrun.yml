@@ -1,0 +1,95 @@
+# Dry-run of horizon-mods' check.yml for the Zoom 3.0.0 pull request (horizon-mods#1214).
+# Base = horizon-mods main, head = this branch's tree. Read-only towards horizon-mods: publishes nothing.
+name: dryrun
+on:
+  workflow_dispatch:
+    inputs:
+      rev:
+        description: Horizon commit (40 hex); empty = .github/horizon-rev
+        required: false
+permissions:
+  contents: write   # to read this repo's draft candidate release; nothing is written
+jobs:
+  dryrun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: head
+          persist-credentials: false
+      - name: Base = horizon-mods main
+        id: base
+        run: |
+          git clone -q https://github.com/horizon-rust/horizon-mods base
+          echo "sha=$(git -C base rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "head=$(git -C head rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git -C base log --oneline -1
+          # The pull request's tree: this branch without its dry-run workflow.
+          git -C head rm -q .github/workflows/dryrun.yml
+          git -C head -c user.name=dryrun -c user.email=dryrun@invalid commit -q -m "the pull request's tree"
+          echo "pr=$(git -C head rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git -C head fetch -q https://github.com/horizon-rust/horizon-mods main
+          git -C head diff --stat FETCH_HEAD HEAD
+      - name: Pin
+        run: |
+          echo "${{ inputs.rev || '0b14f8acfd97fa2c750e42795249dcc981178ca4' }}" > base/.github/horizon-rev
+          cat base/.github/horizon-rev
+      - name: Only regular files
+        run: |
+          bad=$(git -C head ls-tree -r HEAD | awk '$1 != "100644" && $1 != "100755"')
+          [ -z "$bad" ] || { echo "$bad"; exit 1; }
+      - run: base/scripts/install-tool.sh
+      - name: What it changes (check.yml's catalogue step, unchanged; expected to fail on the archived kind)
+        id: faithful
+        continue-on-error: true
+        run: |
+          python3 base/scripts/catalogue.py review-base base "${{ steps.base.outputs.sha }}" \
+            head "${{ steps.base.outputs.pr }}" review-faithful --author-id "$(gh api users/NikitaMGrimm --jq .id)" \
+            --unconfirmed-owners "$RUNNER_TEMP/unconfirmed-faithful.txt"
+      - name: SCRATCH ONLY - the same catalogue step without the archived-kind rule, to run every later step
+        run: |
+          sed 's/for field in ("kind", "owners", "owner_ids", "key"):/for field in ("owners", "owner_ids", "key"):/' \
+            base/scripts/catalogue.py > "$RUNNER_TEMP/catalogue-nokind.py"
+          diff base/scripts/catalogue.py "$RUNNER_TEMP/catalogue-nokind.py" || true
+          python3 "$RUNNER_TEMP/catalogue-nokind.py" review-base base "${{ steps.base.outputs.sha }}" \
+            head "${{ steps.base.outputs.pr }}" review-base --author-id "$(gh api users/NikitaMGrimm --jq .id)" \
+            --unconfirmed-owners "$RUNNER_TEMP/unconfirmed-owners.txt"
+      - name: Registry review (check.yml)
+        working-directory: base
+        run: cargo horizon-mod registry review ../review-base ../head --author NikitaMGrimm
+      - name: Download its files (zoom from this repo's draft candidate, the rest by check.yml's fetch.sh)
+        working-directory: base
+        env:
+          GH_REPO: horizon-rust/horizon-mods
+        run: |
+          set -euo pipefail
+          mkdir -p ../files
+          sha=$(python3 -c 'import tomllib;print(tomllib.load(open("../head/mods/zoom.toml","rb"))["versions"][0]["sha256"])')
+          asset=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.name == "zoom 3.0.0 (candidate)") | .assets[] | select(.name == "zoom-3.0.0.hmod") | .url')
+          gh api -H "Accept: application/octet-stream" "$asset" > "../files/$sha"
+          echo "$sha  ../files/$sha" | sha256sum --check
+          cd .. && bash base/scripts/fetch.sh head
+      - name: Check each new file (check.yml)
+        run: cargo horizon-mod registry check base head --files files
+      - name: The index it would publish (check.yml)
+        run: |
+          cargo horizon-mod registry build head --files files --out index.json --generated "$(date -u +%FT%TZ)"
+          python3 base/scripts/catalogue.py history head "$(git -C head rev-parse HEAD)" history
+          jq -r '.projects[] | "\(.kind) \(.id) \(.versions[0].version)"' index.json
+          jq '.projects[] | select(.id == "zoom")' index.json
+      - name: Archived-kind rule (faithful catalogue step above)
+        if: always()
+        run: |
+          echo "faithful catalogue step: ${{ steps.faithful.outcome }}"
+          [ "${{ steps.faithful.outcome }}" = success ] || { echo "::error::catalogue.py refuses: zoom: reactivation must preserve archived kind"; exit 1; }
+      - name: Owner of a reactivated archived id (last, after every other check)
+        if: always()
+        run: |
+          file="$RUNNER_TEMP/unconfirmed-owners.txt"
+          [ -s "$file" ] || exit 0
+          cat "$file"
+          echo "::error::owner not confirmed; a maintainer confirms by hand"
+          exit 1
