@@ -29,7 +29,8 @@ jobs:
       - name: The real branches
         run: |
           git clone -q https://github.com/horizon-rust/horizon-mods main
-          git clone -q --branch registry/cutover-0.2 https://github.com/horizon-rust/horizon-mods pr
+          git clone -q https://github.com/horizon-rust/horizon-mods pr
+          git -C pr checkout -q --detach dfe3ecd742   # #1148 as merged
           git -C main log --oneline -1; git -C pr log --oneline -1
           # This tree must be #1148's apart from the workflows folder.
           git diff --stat --no-index pr/mods mods && git diff --stat --no-index pr/archive archive && git diff --stat --no-index pr/scripts scripts
