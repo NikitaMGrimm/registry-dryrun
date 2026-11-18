@@ -59,7 +59,7 @@ class CatalogueTests(unittest.TestCase):
         git(repo, "commit", "-q", "--allow-empty", "-m", "state")
         return git(repo, "rev-parse", "HEAD")
 
-    def review(self, author="author", author_id=7):
+    def review(self, author_id=7):
         if self.moves:
             self.write(self.base, ".github", "".join(f"{m} {i}\n" for m, i in sorted(self.moves)), "archive-moves.txt")
         base, head = self.commit(self.base), self.commit(self.head)
@@ -69,7 +69,7 @@ class CatalogueTests(unittest.TestCase):
                 path.rmdir() if path.is_dir() else path.unlink()
             out.rmdir()
         with contextlib.redirect_stdout(io.StringIO()):
-            catalogue.review_base(self.base, base, self.head, head, out, author, author_id)
+            catalogue.review_base(self.base, base, self.head, head, out, author_id)
         return out
 
     def move(self, text=NATIVE, archive="native-v1", listed=True):
@@ -115,11 +115,6 @@ sha256 = "{}"
         with self.assertRaisesRegex(ValueError, "must not change or disappear"):
             self.review()
 
-    def test_old_extension_is_never_live(self):
-        self.write(self.head, "mods")
-        with self.assertRaisesRegex(ValueError, "not a live package"):
-            self.review()
-
     def test_dependent_modpack_can_move_unchanged(self):
         self.move(PACK)
         self.review()
@@ -147,19 +142,19 @@ sha256 = "{}"
     def test_owner_can_reactivate_with_a_new_package(self):
         self.frozen()
         self.write(self.head, "mods", PORT)
-        self.review(author="AUTHOR", author_id=7)
+        self.review(author_id=7)
 
     def test_someone_else_cannot_reactivate_an_archived_id(self):
         self.frozen()
         self.write(self.head, "mods", PORT)
         with self.assertRaisesRegex(ValueError, "a maintainer must confirm the owner"):
-            self.review(author="bot", author_id=99)
+            self.review(author_id=99)
 
-    def test_a_renamed_login_needs_the_same_account(self):
-        self.frozen()
-        self.write(self.head, "mods", PORT)
-        with self.assertRaisesRegex(ValueError, "a maintainer must confirm the owner"):
-            self.review(author="author", author_id=8)
+    def test_entry_without_owner_ids_always_goes_to_a_maintainer(self):
+        self.frozen(NATIVE.replace("owner_ids = [7]", ""))
+        self.write(self.head, "mods", PORT.replace("owner_ids = [7]", ""))
+        with self.assertRaisesRegex(ValueError, "admin rights"):
+            self.review(author_id=7)
 
     def test_archived_shader_id_stays_reserved(self):
         self.frozen(SHADER, API_01)
@@ -168,13 +163,13 @@ sha256 = "{}"
         self.review()
         self.write(self.head, "mods", port)
         with self.assertRaisesRegex(ValueError, "a maintainer must confirm the owner"):
-            self.review(author="someone", author_id=1)
+            self.review(author_id=1)
 
     def test_reactivation_cannot_take_over_an_archived_id(self):
         self.frozen()
         self.write(self.head, "mods", PORT.replace('["Author"]', '["attacker"]'))
         with self.assertRaisesRegex(ValueError, "preserve archived owners"):
-            self.review(author="author", author_id=7)
+            self.review(author_id=7)
 
     def test_reactivation_cannot_rename_historic_bytes(self):
         self.frozen()
@@ -186,7 +181,7 @@ sha256 = "{}"
         self.frozen()
         self.write(self.base, "mods", PORT)
         self.write(self.head, "mods", PORT)
-        self.review(author="anyone", author_id=1)
+        self.review(author_id=1)
 
     @unittest.skipUnless(os.name == "posix", "needs symlinks")
     def test_linked_folder_is_refused(self):

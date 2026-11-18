@@ -63,16 +63,15 @@ jobs:
           echo "login=${author:-$LOGIN}" >> "$GITHUB_OUTPUT"
       - name: What it changes
         env:
-          # GitHub's own record of who opened the pull request, never a claim in its body: archived ids
-          # reactivate only for their owners.
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          # GitHub's own numeric id of who opened the pull request, never a login or a claim in its body:
+          # archived ids reactivate only for an account in their owner_ids.
           PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
         run: |
           set -o pipefail
           { echo "## Changes"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           status=0
           python3 base/scripts/catalogue.py review-base base "${{ steps.merged.outputs.base }}" \
-            head "$(git -C head rev-parse HEAD)" review-base --author "$PR_AUTHOR" --author-id "$PR_AUTHOR_ID"
+            head "$(git -C head rev-parse HEAD)" review-base --author-id "$PR_AUTHOR_ID"
           cargo horizon-mod registry review review-base head --author "${{ steps.author.outputs.login }}" 2>&1 \
             | tee -a "$GITHUB_STEP_SUMMARY" || status=1
           echo '```' >> "$GITHUB_STEP_SUMMARY"

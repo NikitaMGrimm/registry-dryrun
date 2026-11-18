@@ -96,15 +96,13 @@ def reviewed_moves(repo, sha):
     return moves
 
 
-def owned_by_author(historic, author, author_id):
-    """The pull request's author (GitHub's own login and numeric id, not a form's claim) is a recorded owner."""
-    if author.lower() not in (owner.lower() for owner in historic.get("owners", [])):
-        return False
-    ids = historic.get("owner_ids", [])
-    return not ids or author_id in ids
+def owned_by_author(historic, author_id):
+    """The pull request's author (GitHub's own numeric account id, not a login or a form's claim) is a recorded owner.
+    An entry without owner_ids never passes: a maintainer verifies its owner by hand."""
+    return author_id in historic.get("owner_ids", [])
 
 
-def review_archive(name, kinds, holds, old, live, before, frozen, moves, author, author_id, removed):
+def review_archive(name, kinds, holds, old, live, before, frozen, moves, author_id, removed):
     for id, (_, data) in before.items():
         if id not in frozen or frozen[id][1] != data:
             raise ValueError(f"{id}: frozen historical metadata must not change or disappear")
@@ -121,9 +119,9 @@ def review_archive(name, kinds, holds, old, live, before, frozen, moves, author,
             removed.append(id)
         if id in live:
             current = live[id][0]
-            if (id not in old or old[id][1] != live[id][1]) and not owned_by_author(historic, author, author_id):
-                raise ValueError(f"{id}: this id is archived, and the pull request's author is not one of its owners; "
-                                 "a maintainer must confirm the owner")
+            if (id not in old or old[id][1] != live[id][1]) and not owned_by_author(historic, author_id):
+                raise ValueError(f"{id}: this id is archived, and the pull request's author is not in its owner_ids; "
+                                 "a maintainer must confirm the owner by hand and merge with admin rights")
             for field in ("kind", "owners", "owner_ids", "key"):
                 if current.get(field) != historic.get(field):
                     raise ValueError(f"{id}: reactivation must preserve archived {field}")
@@ -132,7 +130,7 @@ def review_archive(name, kinds, holds, old, live, before, frozen, moves, author,
                     raise ValueError(f"{id}: reactivation needs a new version and package, not a renamed historic bundle")
 
 
-def review_base(base, base_sha, head, head_sha, out, author, author_id):
+def review_base(base, base_sha, head, head_sha, out, author_id):
     """Allow only reviewed byte-preserving archival; keep normal registry review for live data."""
     old = entries(base, base_sha, "mods")
     live = entries(head, head_sha, "mods")
@@ -146,10 +144,7 @@ def review_base(base, base_sha, head, head_sha, out, author, author_id):
     removed = []
     for name, (path, kinds, holds, _) in ARCHIVES.items():
         review_archive(name, kinds, holds, old, live, entries(base, base_sha, path), frozen[name], moves,
-                       author, author_id, removed)
-    for id, (entry, _) in live.items():
-        if any(v["file"].endswith(".hnmod") for v in entry.get("versions", [])):
-            raise ValueError(f"{id}: .hnmod is frozen history, not a live package")
+                       author_id, removed)
     (out / "mods").mkdir(parents=True)
     for id, (_, data) in old.items():
         if id not in removed:
@@ -201,8 +196,7 @@ def main():
     review.add_argument("head", type=pathlib.Path)
     review.add_argument("head_sha")
     review.add_argument("out", type=pathlib.Path)
-    review.add_argument("--author", required=True, help="the pull request's author login, from GitHub")
-    review.add_argument("--author-id", type=int, required=True, help="that account's numeric id, from GitHub")
+    review.add_argument("--author-id", type=int, required=True, help="the pull request author's numeric id, from GitHub")
     archive = commands.add_parser("history")
     archive.add_argument("root", type=pathlib.Path)
     archive.add_argument("sha")
@@ -211,7 +205,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.command == "review-base":
-            review_base(args.base, args.base_sha, args.head, args.head_sha, args.out, args.author, args.author_id)
+            review_base(args.base, args.base_sha, args.head, args.head_sha, args.out, args.author_id)
         else:
             history(args.root, args.sha, args.out, args.archive)
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:

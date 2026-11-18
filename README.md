@@ -119,11 +119,11 @@ index. Modpack dependencies in the current index must all refer to current packa
 is archived rather than offered with missing dependencies.
 
 Archived IDs are reserved by the pull request check: a `mods/<id>.toml` for an archived id passes only when the
-pull request was opened by one of the archived entry's owners (GitHub login and numeric id); otherwise a maintainer
-must confirm the owner. The submission form service still checks only live ids, and its pull requests are opened by
-its bot, so a reactivation through it always goes to a maintainer. Owners reactivate a project through a manually
-reviewed `mods/<id>.toml` with a genuinely new `.hmod` version, preserving kind, owners, numeric owner IDs and
-signing key. The frozen entry stays unchanged. That review checks the port, its source and
+pull request was opened by an account whose numeric GitHub id is in the archived entry's `owner_ids`. Anything else
+fails, including an archived entry without `owner_ids` and every pull request the submission form opens (as its bot);
+there, a maintainer verifies the owner by hand and merges with admin rights. The form service itself still checks
+only live ids. Owners reactivate a project through a manually reviewed `mods/<id>.toml` with a genuinely new `.hmod`
+version, preserving kind, owners, numeric owner IDs and signing key. The frozen entry stays unchanged. That review checks the port, its source and
 exact-SDK proof, and the normal package/index checks still run. Consumer-mod ports are not part of this cutover.
 
 ## Build and publication trust
@@ -133,9 +133,10 @@ The old `native.yml` and `native-compat.yml`, their source-application/check/tra
 cache, combined-game publisher or signing step in this repository. This replaces the unsafe context in #390;
 the old combined-game proposal #381 is not revived.
 
-Trusted validation and publication jobs build the pinned checker fresh and restore no Actions cache. Files come
-from content-addressed `registry-files` copies, original version releases or staging, and every byte is rehashed,
-including files already on disk. The ordinary index builder then checks package structure, metadata and author
+Trusted validation and publication jobs build the pinned checker fresh, with no tool cache. Publishing keeps the
+downloaded files in an Actions cache so hourly runs don't count as players' downloads; no untrusted job writes that
+cache scope any more, and every byte is rehashed against its entry, cached or downloaded, so a stale or tampered
+entry is downloaded again from the original version release or staging. The ordinary index builder then checks package structure, metadata and author
 signatures before anything is published. Existing SDK release signature/provenance authority stays in the engine's
 protected release workflow; registry packages do not acquire invented signing keys.
 

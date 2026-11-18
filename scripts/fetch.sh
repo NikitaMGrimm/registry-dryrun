@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Download reviewed files into files/<sha256>. No Actions cache is trusted.
-# registry-files contains content-addressed copies; original releases and staging
-# remain the authoritative package sources. Every path is rehashed before use.
+# Downloads every file the live entries list (`registry list` reads only mods/; archived
+# entries are never downloaded) into files/<sha256>: from its own release (<id>-<version>)
+# once published, else from the `staging` prerelease. Every file, kept from the cache or
+# downloaded, is rehashed against its entry's sha256; a cached file that doesn't match is
+# downloaded again, so no cache content is trusted.
 # FILES_FROM=<dir> reads local packages for a trial.
 set -euo pipefail
 checkout="${1:-.}"
@@ -19,10 +21,6 @@ cargo horizon-mod registry list "$checkout" | while read -r sha id version file;
   ext="${file##*.}"
   if [ -n "${FILES_FROM:-}" ]; then
     cp "$FILES_FROM/$file" "$tmp/package"
-  elif curl --fail --silent --show-error --location \
-      "https://github.com/${GH_REPO:-horizon-rust/horizon-mods}/releases/download/registry-files/$sha" \
-      --output "$tmp/package"; then
-    :
   elif gh release download "$id-$version" --pattern "$file" --dir "$tmp" 2>/dev/null; then
     mv "$tmp/$file" "$tmp/package"
   elif gh release download staging --pattern "$sha.$ext" --dir "$tmp"; then
