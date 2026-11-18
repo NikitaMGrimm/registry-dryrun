@@ -1,0 +1,21 @@
+id = "stage_test"
+kind = "resourcepack"
+name = "Stage test"
+summary = "Test of scripts/stage.sh."
+owners = ["NikitaMGrimm"]
+license = "MIT"
+source = "https://github.com/NikitaMGrimm/horizon-sync-test"
+
+[[versions]]
+version = "1.0.0"
+published = "2026-11-18"
+game = "26.3"
+file = "sync_test_pack-1.0.0.zip"
+sha256 = "38e22582f3f0cd36dcb417b84211c635a746cca3a92a7130392a200b9f2fb83e"
+
+[[versions]]
+version = "0.9\u001b[31m\nred"
+published = "2026-11-17"
+game = "26.3"
+file = "old\u0007.zip"
+sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
