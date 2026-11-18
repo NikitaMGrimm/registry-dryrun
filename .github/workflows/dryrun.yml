@@ -1,0 +1,356 @@
+# Catalogue dry-run of horizon-mods #1148 (registry/cutover-0.2) with a newer Horizon tool.
+# Read-only: publishes nothing, writes nothing to horizon-mods.
+# Job `publish` is the cold publish dry-run: #1148's publish.yml steps (generated from it) with no files cache and
+# the tool built fresh at rev, up to but not including the Pages deploy; it creates no release (it only reports
+# which ones it would create) and deploys nothing. It takes the verified files from this workflow's last successful
+# run on this branch, as publish.yml does from main's. Job `sdk-packages` puts packages built by the new SDK through
+# the registry route (scratch releases here only).
+name: dryrun
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      rev:
+        description: Horizon commit (40 hex); empty = the branch's .github/horizon-rev
+        required: false
+permissions:
+  contents: read
+jobs:
+  dryrun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: horizon-rust/horizon-mods
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: The real branches
+        run: |
+          git clone -q https://github.com/horizon-rust/horizon-mods main
+          git clone -q --branch registry/cutover-0.2 https://github.com/horizon-rust/horizon-mods pr
+          git -C main log --oneline -1; git -C pr log --oneline -1
+          # This tree must be #1148's apart from the workflows folder.
+          git diff --stat --no-index pr/mods mods && git diff --stat --no-index pr/archive archive && git diff --stat --no-index pr/scripts scripts
+      - name: Pin
+        id: pin
+        run: |
+          echo "${{ inputs.rev || '0b14f8acfd97fa2c750e42795249dcc981178ca4' }}" > .github/horizon-rev
+          echo "rev=$(cat .github/horizon-rev)" >> "$GITHUB_OUTPUT"
+          cat .github/horizon-rev
+      - name: Unit tests on #1148's tree
+        run: cd pr && python3 -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Only regular files (check.yml's step)
+        run: |
+          bad=$(git -C pr ls-tree -r HEAD | awk '$1 != "100644" && $1 != "100755"')
+          [ -z "$bad" ] || { echo "$bad"; exit 1; }
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: tool
+        with:
+          path: ~/.cargo/bin
+          key: cargo-horizon-mod-${{ steps.pin.outputs.rev }}
+      - name: Install the tool (the branch's strict installer and pin)
+        if: steps.tool.outputs.cache-hit != 'true'
+        run: bash scripts/install-tool.sh
+      - name: List
+        run: cargo horizon-mod registry list . > list.txt && wc -l list.txt
+      - name: The moves match the allowlist (main plus #1148's archive-moves.txt as base)
+        run: |
+          git -C main -c user.name=dryrun -c user.email=dryrun@example.invalid checkout -q -b allowlisted
+          cp pr/.github/archive-moves.txt main/.github/
+          git -C main add .github/archive-moves.txt
+          git -C main -c user.name=dryrun -c user.email=dryrun@example.invalid commit -qm allowlist
+          python3 scripts/catalogue.py review-base main "$(git -C main rev-parse HEAD)" pr "$(git -C pr rev-parse HEAD)" \
+            moved --author-id 0 --unconfirmed-owners "$RUNNER_TEMP/owners.txt" | tail -2
+          echo "archived: $(python3 scripts/catalogue.py review-base main "$(git -C main rev-parse HEAD)" pr "$(git -C pr rev-parse HEAD)" moved2 --author-id 0 --unconfirmed-owners "$RUNNER_TEMP/owners.txt" | wc -l)"
+          echo "allowlisted: $(grep -vc '^#' pr/.github/archive-moves.txt)"
+      - name: A pull request after the cutover (base = head = #1148), the check's review
+        run: |
+          python3 scripts/catalogue.py review-base pr "$(git -C pr rev-parse HEAD)" pr "$(git -C pr rev-parse HEAD)" \
+            review-base --author-id 0 --unconfirmed-owners "$RUNNER_TEMP/owners.txt"
+          cargo horizon-mod registry review review-base . --author NikitaMGrimm
+      - name: Fetch files
+        run: bash scripts/fetch.sh .
+      - name: Build
+        run: |
+          set +e
+          mkdir -p site
+          cargo horizon-mod registry build . --files files --out site/index.json --site https://horizon-rust.github.io/horizon-mods/ --generated "$(date -u +%FT%TZ)" > build.log 2>&1
+          status=$?
+          echo "exit $status"; cut -c1-300 build.log
+          [ "$status" = 0 ] || exit 1
+          projects=$(jq '.projects | length' site/index.json); live=$(ls mods/*.toml | wc -l)
+          echo "index projects $projects, live entries $live"
+          jq -r '.projects[] | "\(.kind) \(.id) \(.versions | map(.version) | join(","))"' site/index.json
+          [ "$projects" = "$live" ]
+  publish:
+    # publish.yml's own permissions block, so the artifact carry-over runs as it will in production.
+    # After the catalogue job, so only this job's requests are counted.
+    needs: dryrun
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+      # The last successful publish run and its verified-files artifact.
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: horizon-rust/horizon-mods
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Pin the tool to rev; log every gh call
+        run: |
+          echo "${{ inputs.rev || '0b14f8acfd97fa2c750e42795249dcc981178ca4' }}" > .github/horizon-rev
+          mkdir -p "$HOME/ghlog"
+          cat > "$HOME/ghlog/gh" <<'SH'
+          #!/bin/bash
+          printf '%s\n' "$*" >> "$HOME/gh-calls.log"
+          exec /usr/bin/gh "$@"
+          SH
+          chmod +x "$HOME/ghlog/gh"
+          echo "$HOME/ghlog" >> "$GITHUB_PATH"
+      # Built fresh at the pin: no tool cache.
+      - run: scripts/install-tool.sh
+      # The core rate-limit counter before and after the publish steps counts their REST requests
+      # (rate_limit itself is not counted).
+      - name: Rate limit before
+        run: /usr/bin/gh api rate_limit --jq '.resources.core | "core used \(.used) of \(.limit)"' | tee "$HOME/rate-before.txt"
+      # Files the last successful publish verified: GitHub counts every download of a release asset, so
+      # fetching them all again each hour would count as players. Not an Actions cache (any job in main's
+      # cache scope could write that, and it is unpacked before anything is hashed): an artifact only this
+      # workflow uploads, unpacked outside the checkout, and fetch.sh rehashes each file before use. Anything
+      # missing (no earlier run, an expired artifact, a failed download) is the cold path: download it all.
+      - name: The last successful publish
+        id: last
+        run: |
+          run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow dryrun.yml --branch cutover-0.2 --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null) || run=
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          [ -n "$run" ] || echo "no earlier successful publish: every file is downloaded"
+      - if: steps.last.outputs.run != ''
+        id: kept
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-files
+          path: ${{ runner.temp }}/kept-files
+          run-id: ${{ steps.last.outputs.run }}
+          github-token: ${{ github.token }}
+      - name: Download the files
+        env:
+          FILES_KEPT: ${{ runner.temp }}/kept-files
+        run: |
+          [ "${{ steps.kept.outcome }}" = success ] || echo "no files kept from run ${{ steps.last.outputs.run }}: every file is downloaded"
+          scripts/fetch.sh .
+          echo "files present $(ls files | wc -l), $(du -sh files | cut -f1)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-files
+          path: files/
+          retention-days: 7
+          if-no-files-found: error
+      - name: Build the index
+        run: |
+          mkdir -p site
+          cargo horizon-mod registry build . --files files --out site/index.json --site https://horizon-rust.github.io/horizon-mods/ --generated "$(date -u +%FT%TZ)"
+      - name: Publish new files as releases
+        run: |
+          cargo horizon-mod registry list . | while read -r sha id version file; do
+            tag="$id-$version"
+            gh release view "$tag" >/dev/null 2>&1 && continue
+            echo "would create release $tag"
+          done
+      - name: Download counts
+        run: |
+          # Each version's file is the asset at its URL: a project's downloads
+          # are its files' counts, every version together.
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq '.[].assets[] | {key: .browser_download_url, value: .download_count}' \
+            | jq -s from_entries > counts.json
+          jq --slurpfile counts counts.json '
+            .projects |= map(
+              ([.versions[].file.url | $counts[0][.] // 0] | add) as $n
+              | if $n > 0 then .downloads = $n else . end)' site/index.json > index.counted.json
+          mv index.counted.json site/index.json
+          jq -r '.projects[] | "\(.id) \(.downloads // 0)"' site/index.json
+      - name: GitHub stars
+        run: |
+          # A project's stars are its source repository's (owner/repo of a
+          # https://github.com/ source, a folder of it or .git included), asked
+          # once per repository. One that can't be read is left out, not zero.
+          jq -r '.projects[].source // empty' site/index.json \
+            | sed -nE 's#^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+).*#\1/\2#p' \
+            | sed -E 's/\.git$//' | tr 'A-Z' 'a-z' | sort -u \
+            | while read -r repo; do
+                n="$(gh api "repos/$repo" --jq .stargazers_count 2>/dev/null)" || continue
+                echo "{\"key\": \"$repo\", \"value\": $n}"
+              done | jq -s from_entries > stars.json
+          jq --slurpfile stars stars.json '
+            .projects |= map(
+              (first((.source // "") | ascii_downcase
+                | capture("^https://github[.]com/(?<r>[a-z0-9-]+/[a-z0-9._-]+)").r
+                | sub("[.]git$"; "")) // "") as $r
+              | ($stars[0][$r] // 0) as $n
+              | if $n > 0 then .stars = $n else . end)' site/index.json > index.starred.json
+          mv index.starred.json site/index.json
+          jq -r '.projects[] | "\(.id) \(.stars // 0)"' site/index.json
+      - name: The site
+        run: |
+          cp -R icons site/icons
+          # Screenshots are served beside the icons: the index lists them at
+          # <site>screenshots/<id>/<name>.
+          if [ -d screenshots ]; then cp -R screenshots site/screenshots; fi
+          python3 scripts/catalogue.py history . HEAD site/archive/native-v1
+          python3 scripts/catalogue.py history . HEAD site/archive/api-0.1 --archive api-0.1
+          cat > site/index.html <<'HTML'
+          <!doctype html><meta charset="utf-8"><title>Horizon mods</title>
+          <meta http-equiv="refresh" content="0; url=https://playhorizon.dev/mods">
+          <p><a href="https://playhorizon.dev/mods">playhorizon.dev/mods</a> · <a href="index.json">index.json</a> · <a href="archive/native-v1/">Incompatible native-v1 history</a> · <a href="archive/api-0.1/">Incompatible API 0.1 history</a></p>
+          HTML
+      # upload-pages-artifact follows links, so a submitted link (an icon, a screenshot) could publish the
+      # runner's own files: only regular files and folders go to Pages.
+      - name: Only regular files are published
+        run: |
+          bad=$(find mods icons site $( [ -d screenshots ] && echo screenshots ) ! -type f ! -type d)
+          if [ -n "$bad" ]; then
+            echo "::error::only regular files are published, not: $bad"
+            exit 1
+          fi
+      - name: Requests and calls
+        run: |
+          cat "$HOME/rate-before.txt"
+          /usr/bin/gh api rate_limit --jq '.resources.core | "core used \(.used) of \(.limit)"'
+          echo "gh invocations: $(wc -l < "$HOME/gh-calls.log")"
+          awk '{print $1, $2}' "$HOME/gh-calls.log" | sed -E 's#^api repos/.*#api repos/<source repository>#' | sort | uniq -c
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: site
+  sdk-packages:
+    # Packages built by the new SDK through the registry route: build them, attach them to a scratch release
+    # here, list them in #1148's tree, then `registry review`, `check` and `build`. Writes only to this
+    # scratch repository. Never fails the run, so the publish job's artifact stays usable for the next run.
+    needs: publish
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: horizon-rust/horizon-mods
+      REV: ${{ inputs.rev || '0b14f8acfd97fa2c750e42795249dcc981178ca4' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: echo "$REV" > .github/horizon-rev
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: tool
+        with:
+          path: ~/.cargo/bin
+          key: cargo-horizon-mod-${{ env.REV }}
+      - if: steps.tool.outputs.cache-hit != 'true'
+        run: bash scripts/install-tool.sh
+      - name: Horizon at rev
+        run: |
+          git init -q horizon
+          git -C horizon fetch -q --depth 1 https://github.com/horizon-rust/horizon "$REV"
+          git -C horizon checkout -q FETCH_HEAD
+      - name: Build the book's wasm-hello
+        working-directory: horizon/docs/modding/examples/wasm-hello
+        run: |
+          cargo horizon-mod build --wasm
+          ls -l target/horizon-mod
+      - name: Build a new content mod
+        run: |
+          cd "$RUNNER_TEMP"
+          cargo horizon-mod new dryrun-content
+          cd dryrun-content
+          cargo horizon-mod build
+          ls -l target/horizon-mod
+      - name: Build a new native mod (if cheap)
+        id: native
+        continue-on-error: true
+        timeout-minutes: 25
+        run: |
+          cd "$RUNNER_TEMP"
+          cargo horizon-mod new dryrun-native --template native
+          cd dryrun-native
+          cargo horizon-mod build
+          ls -l target/horizon-mod
+      - name: The publish job's verified files (no download from horizon-mods)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-files
+          path: ${{ runner.temp }}/kept-files
+      - name: List them in #1148's tree, attach them to scratch releases, review, check and build
+        env:
+          NATIVE: ${{ steps.native.outcome }}
+        run: |
+          set -euo pipefail
+          git worktree add -q "$RUNNER_TEMP/base" HEAD
+          mkdir -p files
+          owner_id=$(gh api users/NikitaMGrimm --jq .id)
+          projects="horizon/docs/modding/examples/wasm-hello:mod $RUNNER_TEMP/dryrun-content:mod"
+          [ "$NATIVE" = success ] && projects="$projects $RUNNER_TEMP/dryrun-native:native-mod"
+          : > added.txt
+          for p in $projects; do
+            dir="${p%:*}"; kind="${p##*:}"
+            read -r id version < <(python3 -c 'import sys,tomllib; m=tomllib.load(open(sys.argv[1],"rb")); print(m["id"], m["version"])' "$dir/horizon-mod.toml")
+            pkg=$(ls "$dir"/target/horizon-mod/*.hmod | head -1)
+            file="$id-$version.hmod"
+            sha=$(sha256sum "$pkg" | cut -d' ' -f1)
+            echo "$id $version $kind $sha $(stat -c %s "$pkg") bytes"
+            # Attach to a scratch release, then take it back from there: the route a hand-made pull request uses.
+            gh release delete "$id-$version" -R "$GITHUB_REPOSITORY" -y --cleanup-tag >/dev/null 2>&1 || true
+            mkdir -p "rel/$id"; cp "$pkg" "rel/$id/$file"
+            gh release create "$id-$version" "rel/$id/$file" -R "$GITHUB_REPOSITORY" --prerelease --latest=false \
+              --title "$id $version (dry-run)" --notes "Built by cargo horizon-mod at $REV for the registry dry-run."
+            gh release download "$id-$version" -R "$GITHUB_REPOSITORY" -p "$file" -D "dl/$id"
+            echo "$sha  dl/$id/$file" | sha256sum --check
+            cp "dl/$id/$file" "files/$sha"
+            cp icons/silk_spawners.png "icons/$id.png"
+            python3 - "$id" "$kind" "$version" "$file" "$sha" "$owner_id" <<'PY'
+          import sys, datetime
+          id, kind, version, file, sha, owner = sys.argv[1:]
+          open(f"mods/{id}.toml", "w").write(f'''id = "{id}"
+          kind = "{kind}"
+          name = "Dry-run {id}"
+          summary = "A package built by the new SDK, for the registry dry-run"
+          description = "Built by cargo horizon-mod for the registry's cutover dry-run; not a real mod."
+          authors = ["NikitaMGrimm"]
+          owners = ["NikitaMGrimm"]
+          owner_ids = [{owner}]
+          license = "MIT"
+          source = "https://github.com/horizon-rust/horizon"
+          icon = "icons/{id}.png"
+          categories = ["utility"]
+          tags = ["dry-run"]
+
+          [[versions]]
+          version = "{version}"
+          published = "{datetime.date.today()}"
+          game = "26.3"
+          file = "{file}"
+          sha256 = "{sha}"
+          ''')
+          PY
+            echo "$id $kind" >> added.txt
+          done
+          cat added.txt
+          echo "== review"; cargo horizon-mod registry review "$RUNNER_TEMP/base" . --author NikitaMGrimm
+          echo "== check"; cargo horizon-mod registry check "$RUNNER_TEMP/base" . --files files
+          echo "== fetch"; FILES_KEPT="$RUNNER_TEMP/kept-files" bash scripts/fetch.sh .
+          echo "== build"; mkdir -p site
+          cargo horizon-mod registry build . --files files --out site/index.json --site https://horizon-rust.github.io/horizon-mods/ --generated "$(date -u +%FT%TZ)"
+          while read -r id kind; do
+            got=$(jq -r --arg id "$id" '.projects[] | select(.id == $id) | .kind' site/index.json)
+            echo "index: $id kind=$got (expected $kind)"
+            [ "$got" = "$kind" ]
+          done < added.txt
