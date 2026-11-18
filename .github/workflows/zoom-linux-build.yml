@@ -1,0 +1,42 @@
+name: zoom-linux-build
+on:
+  push:
+    branches: [zoom-linux-build]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: horizon-rust/horizon-mods
+          ref: 77959a6da0e53d28e469fb8e4b3cbd188b765a42
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+          components: rust-src
+          targets: wasm32-unknown-unknown
+      - name: Install cargo-horizon-mod at the Nightly's commit
+        run: cargo install --locked --git https://github.com/horizon-rust/horizon --rev 0b14f8acfd97fa2c750e42795249dcc981178ca4 cargo-horizon-mod
+      - name: Build Zoom
+        working-directory: native/zoom
+        run: |
+          cargo horizon-mod build --wasm
+          ls -la target/horizon-mod
+          sha256sum target/horizon-mod/*.hmod
+      - name: Build the std member outside any checkout
+        run: |
+          mkdir -p /tmp/stdcheck && cd /tmp/stdcheck
+          cargo horizon-mod wasm-std "$GITHUB_WORKSPACE/std-runner.wasm"
+          sha256sum "$GITHUB_WORKSPACE/std-runner.wasm"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zoom-linux
+          path: |
+            native/zoom/target/horizon-mod/*.hmod
+            std-runner.wasm
+          if-no-files-found: error
+          retention-days: 7
