@@ -56,16 +56,6 @@ jobs:
         run: bash scripts/install-tool.sh
       - name: List
         run: cargo horizon-mod registry list . > list.txt && wc -l list.txt
-      - name: The moves match the allowlist (main plus #1148's archive-moves.txt as base)
-        run: |
-          git -C main -c user.name=dryrun -c user.email=dryrun@example.invalid checkout -q -b allowlisted
-          cp pr/.github/archive-moves.txt main/.github/
-          git -C main add .github/archive-moves.txt
-          git -C main -c user.name=dryrun -c user.email=dryrun@example.invalid commit -qm allowlist
-          python3 scripts/catalogue.py review-base main "$(git -C main rev-parse HEAD)" pr "$(git -C pr rev-parse HEAD)" \
-            moved --author-id 0 --unconfirmed-owners "$RUNNER_TEMP/owners.txt" | tail -2
-          echo "archived: $(python3 scripts/catalogue.py review-base main "$(git -C main rev-parse HEAD)" pr "$(git -C pr rev-parse HEAD)" moved2 --author-id 0 --unconfirmed-owners "$RUNNER_TEMP/owners.txt" | wc -l)"
-          echo "allowlisted: $(grep -vc '^#' pr/.github/archive-moves.txt)"
       - name: A pull request after the cutover (base = head = #1148), the check's review
         run: |
           python3 scripts/catalogue.py review-base pr "$(git -C pr rev-parse HEAD)" pr "$(git -C pr rev-parse HEAD)" \
