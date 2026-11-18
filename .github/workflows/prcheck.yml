@@ -1,0 +1,47 @@
+# Every open horizon-mods pull request that touches mods/*.toml, through #1148's check as it will run after the
+# cutover, with the tool at the Nightly. Reads horizon-mods only; runs or builds no submitted code.
+name: prcheck
+on:
+  push:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  prcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: horizon-rust/horizon-mods
+      REV: 0b14f8acfd97fa2c750e42795249dcc981178ca4
+      CUTOVER: 460303aeda6e5ac9a388bb99e9bc2e6e09057b38
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          path: driver
+      - name: horizon-mods with #1148
+        run: |
+          git clone -q https://github.com/horizon-rust/horizon-mods mods
+          git -C mods fetch -q origin "pull/1148/head"
+          git -C mods cat-file -e "$CUTOVER^{commit}"
+          git -C mods checkout -q --detach "$CUTOVER"
+          cat mods/.github/horizon-rev
+      - name: Install the tool (#1148's strict installer and pin)
+        run: bash mods/scripts/install-tool.sh
+      - name: Verified files of the live entries (the last dry-run's publish artifact)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-files
+          path: ${{ runner.temp }}/kept-files
+          run-id: 44237543419
+          github-token: ${{ github.token }}
+      - name: Check every pull request
+        working-directory: mods
+        env:
+          FILES_KEPT: ${{ runner.temp }}/kept-files
+        run: python3 ../driver/.github/prcheck/check_prs.py ../driver/.github/prcheck/targets.json "$CUTOVER" "$RUNNER_TEMP/results.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prcheck-results
+          path: ${{ runner.temp }}/results.json
