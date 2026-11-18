@@ -7,7 +7,7 @@
 name: publish
 on:
   push:
-    branches: [main]
+    branches: [main, sync-test]  # TEST ONLY: workflow_dispatch needs the default branch
   schedule:
     - cron: "23 * * * *"
   workflow_dispatch:
