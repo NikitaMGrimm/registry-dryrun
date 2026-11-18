@@ -30,7 +30,6 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      HORIZON_REV: ${{ vars.HORIZON_REV }}
     steps:
       - uses: actions/checkout@v4
         with:

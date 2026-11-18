@@ -15,7 +15,7 @@ code runs with the player's permissions. Registry checks inspect packages withou
 Rust, build scripts, proc macros or wasm. Reviewers must examine sources and the author's exact-SDK build proof.
 Registry-built native binaries and combined-game sets are not needed by this launcher.
 
-**Cutover activation gate:** do not merge/activate this catalogue removal, change `HORIZON_REV`, or deploy the new
+**Cutover activation gate:** do not merge/activate this catalogue removal, change `.github/horizon-rev`, or deploy the new
 submission service for public use until the matching signed game, SDK and launcher are published and real native
 and wasm staging/index/install canaries pass. The current published Nightly is not proof of that gate.
 
@@ -40,7 +40,7 @@ Accepted kinds include content/wasm mods, native source mods, modpacks of curren
 and shader packs supported by the checker. Before submitting, use the checker for the reviewed engine revision:
 
 ```sh
-cargo install --locked --git https://github.com/horizon-rust/horizon --rev "$HORIZON_REV" cargo-horizon-mod
+cargo install --locked --git https://github.com/horizon-rust/horizon --rev "$(cat .github/horizon-rev)" cargo-horizon-mod
 cargo horizon-mod check target/horizon-mod/my_mod.hmod
 ```
 
@@ -76,8 +76,10 @@ why.
 
 The entry and index format is
 [the registry reference](https://github.com/horizon-rust/horizon/blob/main/docs/modding/src/reference/registry-index.md).
-Checks and publishing use `cargo horizon-mod` from **the exact reviewed 40-character engine commit** in repository
-variable `HORIZON_REV`. Missing, abbreviated or floating revisions fail closed; there is no `main` fallback.
+Checks and publishing use `cargo horizon-mod` from **the exact reviewed 40-character engine commit** in
+`.github/horizon-rev`. Each job reads it from its trusted checkout (a pull request's check from main, never from the
+pull request), so fork pull requests get the same tool. Changing the pin is a reviewed commit to main.
+Missing, abbreviated or floating revisions fail closed; there is no `main` fallback.
 Deploy `horizon-mod-registry` from that coordinated engine release too: an old deployed service does not understand
 the new package contract. First land `scripts/catalogue.py` and its unit tests alone as inert, reviewed tooling,
 without changing workflows or the catalogue. The cutover PR can then use that trusted base script normally;

@@ -18,7 +18,6 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      HORIZON_REV: ${{ vars.HORIZON_REV }}
     steps:
       # The main the pull request is merged into, not the event's base.sha: a re-run (or a run that waited in the
       # queue) keeps the old base.sha while GitHub rebuilds the merge commit on today's main, so everything main
@@ -36,7 +35,7 @@ jobs:
           ref: ${{ steps.merged.outputs.base }}
           path: base
           persist-credentials: false
-      # main's scripts, not the pull request's.
+      # main's scripts and tool pin (base/.github/horizon-rev), not the pull request's.
       - run: base/scripts/install-tool.sh
       - name: Who submitted it
         id: author
