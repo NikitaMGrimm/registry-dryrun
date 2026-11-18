@@ -102,7 +102,7 @@ def owned_by_author(historic, author_id):
     return author_id in historic.get("owner_ids", [])
 
 
-def review_archive(name, kinds, holds, old, live, before, frozen, moves, author_id, removed):
+def review_archive(name, kinds, holds, old, live, before, frozen, moves, author_id, removed, unconfirmed):
     for id, (_, data) in before.items():
         if id not in frozen or frozen[id][1] != data:
             raise ValueError(f"{id}: frozen historical metadata must not change or disappear")
@@ -119,9 +119,11 @@ def review_archive(name, kinds, holds, old, live, before, frozen, moves, author_
             removed.append(id)
         if id in live:
             current = live[id][0]
+            # Not raised here: the check runs every other step first and fails on this last, so a maintainer
+            # who confirms the owner by hand still has every other result for the exact head.
             if (id not in old or old[id][1] != live[id][1]) and not owned_by_author(historic, author_id):
-                raise ValueError(f"{id}: this id is archived, and the pull request's author is not in its owner_ids; "
-                                 "a maintainer must confirm the owner by hand and merge with admin rights")
+                unconfirmed.append(f"{id}: this id is archived, and the pull request's author is not in its owner_ids; "
+                                   "a maintainer must confirm the owner by hand")
             for field in ("kind", "owners", "owner_ids", "key"):
                 if current.get(field) != historic.get(field):
                     raise ValueError(f"{id}: reactivation must preserve archived {field}")
@@ -131,7 +133,8 @@ def review_archive(name, kinds, holds, old, live, before, frozen, moves, author_
 
 
 def review_base(base, base_sha, head, head_sha, out, author_id):
-    """Allow only reviewed byte-preserving archival; keep normal registry review for live data."""
+    """Allow only reviewed byte-preserving archival; keep normal registry review for live data.
+    Returns the reactivations whose owner the pull request's author isn't (empty when every owner is confirmed)."""
     old = entries(base, base_sha, "mods")
     live = entries(head, head_sha, "mods")
     moves = reviewed_moves(base, base_sha)
@@ -141,10 +144,10 @@ def review_base(base, base_sha, head, head_sha, out, author_id):
         if seen & ids.keys():
             raise ValueError(f"{min(seen & ids.keys())}: an id is frozen in one archive only")
         seen |= ids.keys()
-    removed = []
+    removed, unconfirmed = [], []
     for name, (path, kinds, holds, _) in ARCHIVES.items():
         review_archive(name, kinds, holds, old, live, entries(base, base_sha, path), frozen[name], moves,
-                       author_id, removed)
+                       author_id, removed, unconfirmed)
     (out / "mods").mkdir(parents=True)
     for id, (_, data) in old.items():
         if id not in removed:
@@ -154,6 +157,7 @@ def review_base(base, base_sha, head, head_sha, out, author_id):
         (out / "revoked.toml").write_bytes(revoked)
     for id in removed:
         print(f"Archived {id}: original metadata and published assets retained; incompatible with the SDK runtime")
+    return unconfirmed
 
 
 def history(root, sha, out, name="native-v1"):
@@ -197,6 +201,8 @@ def main():
     review.add_argument("head_sha")
     review.add_argument("out", type=pathlib.Path)
     review.add_argument("--author-id", type=int, required=True, help="the pull request author's numeric id, from GitHub")
+    review.add_argument("--unconfirmed-owners", type=pathlib.Path, required=True,
+                        help="file to write each reactivation whose owner is not confirmed to; empty if none")
     archive = commands.add_parser("history")
     archive.add_argument("root", type=pathlib.Path)
     archive.add_argument("sha")
@@ -205,7 +211,8 @@ def main():
     args = parser.parse_args()
     try:
         if args.command == "review-base":
-            review_base(args.base, args.base_sha, args.head, args.head_sha, args.out, args.author_id)
+            unconfirmed = review_base(args.base, args.base_sha, args.head, args.head_sha, args.out, args.author_id)
+            args.unconfirmed_owners.write_text("".join(f"{line}\n" for line in unconfirmed))
         else:
             history(args.root, args.sha, args.out, args.archive)
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:

@@ -70,8 +70,11 @@ jobs:
           set -o pipefail
           { echo "## Changes"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           status=0
+          # An unconfirmed owner of a reactivated archived id is only recorded here; the last step fails on it,
+          # after every other check has run on this head.
           python3 base/scripts/catalogue.py review-base base "${{ steps.merged.outputs.base }}" \
-            head "$(git -C head rev-parse HEAD)" review-base --author-id "$PR_AUTHOR_ID"
+            head "$(git -C head rev-parse HEAD)" review-base --author-id "$PR_AUTHOR_ID" \
+            --unconfirmed-owners "$RUNNER_TEMP/unconfirmed-owners.txt"
           cargo horizon-mod registry review review-base head --author "${{ steps.author.outputs.login }}" 2>&1 \
             | tee -a "$GITHUB_STEP_SUMMARY" || status=1
           echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -104,3 +107,19 @@ jobs:
             index.json
             history/
           if-no-files-found: error
+      - name: Owner of a reactivated archived id (last, after every other check)
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          file="$RUNNER_TEMP/unconfirmed-owners.txt"
+          [ -s "$file" ] || exit 0
+          cat "$file"
+          if [ "$JOB_STATUS" = success ]; then
+            msg="owner not confirmed; every other check passed on this head. A maintainer may admin-merge only after confirming the owner by hand."
+          else
+            msg="owner not confirmed, and other checks failed too: fix those first."
+          fi
+          { echo "## Owner"; echo "$msg"; echo '```'; cat "$file"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::$msg"
+          exit 1

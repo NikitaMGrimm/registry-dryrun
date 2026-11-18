@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -69,8 +70,15 @@ class CatalogueTests(unittest.TestCase):
                 path.rmdir() if path.is_dir() else path.unlink()
             out.rmdir()
         with contextlib.redirect_stdout(io.StringIO()):
-            catalogue.review_base(self.base, base, self.head, head, out, author_id)
+            self.unconfirmed = catalogue.review_base(self.base, base, self.head, head, out, author_id)
         return out
+
+    def assert_owner_unconfirmed(self, author_id):
+        # Deferred: everything else is reviewed and the baseline written; only the owner is left to a maintainer.
+        out = self.review(author_id)
+        self.assertTrue((out / "mods").is_dir())
+        self.assertEqual(len(self.unconfirmed), 1)
+        self.assertIn("a maintainer must confirm the owner by hand", self.unconfirmed[0])
 
     def move(self, text=NATIVE, archive="native-v1", listed=True):
         self.write(self.base, "mods", text)
@@ -143,18 +151,35 @@ sha256 = "{}"
         self.frozen()
         self.write(self.head, "mods", PORT)
         self.review(author_id=7)
+        self.assertEqual(self.unconfirmed, [])
+
+    def test_unconfirmed_owner_does_not_hide_other_problems(self):
+        self.frozen()
+        self.write(self.head, "mods", NATIVE.replace(".hnmod", ".hmod"))
+        with self.assertRaisesRegex(ValueError, "new version and package"):
+            self.review(author_id=99)
+
+    def test_cli_writes_unconfirmed_owners_and_succeeds(self):
+        self.frozen()
+        self.write(self.head, "mods", PORT)
+        base, head = self.commit(self.base), self.commit(self.head)
+        report = self.root / "owners.txt"
+        result = subprocess.run(
+            [sys.executable, str(pathlib.Path(catalogue.__file__)), "review-base", str(self.base), base,
+             str(self.head), head, str(self.root / "cli-out"), "--author-id", "99", "--unconfirmed-owners", str(report)],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("sample: this id is archived", report.read_text())
 
     def test_someone_else_cannot_reactivate_an_archived_id(self):
         self.frozen()
         self.write(self.head, "mods", PORT)
-        with self.assertRaisesRegex(ValueError, "a maintainer must confirm the owner"):
-            self.review(author_id=99)
+        self.assert_owner_unconfirmed(99)
 
     def test_entry_without_owner_ids_always_goes_to_a_maintainer(self):
         self.frozen(NATIVE.replace("owner_ids = [7]", ""))
         self.write(self.head, "mods", PORT.replace("owner_ids = [7]", ""))
-        with self.assertRaisesRegex(ValueError, "admin rights"):
-            self.review(author_id=7)
+        self.assert_owner_unconfirmed(7)
 
     def test_archived_shader_id_stays_reserved(self):
         self.frozen(SHADER, API_01)
@@ -162,8 +187,7 @@ sha256 = "{}"
         self.write(self.head, "mods", port)
         self.review()
         self.write(self.head, "mods", port)
-        with self.assertRaisesRegex(ValueError, "a maintainer must confirm the owner"):
-            self.review(author_id=1)
+        self.assert_owner_unconfirmed(1)
 
     def test_reactivation_cannot_take_over_an_archived_id(self):
         self.frozen()
