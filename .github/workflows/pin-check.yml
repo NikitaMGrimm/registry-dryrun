@@ -1,0 +1,45 @@
+# Checks every live horizon-mods package with the checker at .github/horizon-rev. Read-only: publishes nothing.
+name: pin-check
+on:
+  push:
+    branches: [pin-0a875da]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: horizon-rust/horizon-mods
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the checker at the pin (from source)
+        run: |
+          start=$(date +%s); bash scripts/install-tool.sh --from-source; echo "install took $(( $(date +%s) - start )) s"
+          cargo horizon-mod --version || true
+      - name: Fetch every live file
+        run: bash scripts/fetch.sh .
+      - name: Each package, Zoom first
+        continue-on-error: true
+        run: |
+          set +e
+          cargo horizon-mod registry list . > list.txt
+          { grep ' zoom ' list.txt; grep -v ' zoom ' list.txt; } > ordered.txt
+          refused=0
+          while read -r sha id version file; do
+            mkdir -p one && rm -f one/* && cp "files/$sha" "one/$file"
+            if out=$(cargo horizon-mod check "one/$file" 2>&1); then echo "ok      $id $version"; else refused=$((refused+1)); echo "REFUSED $id $version: $(echo "$out" | tail -3 | tr '\n' ' ')"; fi
+          done < ordered.txt
+          echo "packages: $(wc -l < ordered.txt), refused: $refused"
+      - name: Registry build
+        continue-on-error: true
+        run: |
+          mkdir -p site
+          cargo horizon-mod registry build . --files files --out site/index.json --site https://horizon-rust.github.io/horizon-mods/ --generated "$(date -u +%FT%TZ)" 2>&1 | tail -20
+          echo "projects: $(jq '.projects | length' site/index.json 2>/dev/null)"
+      - name: Registry check, empty base (every file new)
+        continue-on-error: true
+        run: |
+          mkdir -p empty/mods
+          cargo horizon-mod registry check empty . --files files 2>&1 | tail -40; echo "exit ${PIPESTATUS[0]}"
