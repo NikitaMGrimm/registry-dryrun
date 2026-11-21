@@ -2,7 +2,7 @@
 name: pin-check
 on:
   push:
-    branches: [pin-0a875da]
+    branches: [pin-8f83e5c]
 permissions:
   contents: read
 jobs:
